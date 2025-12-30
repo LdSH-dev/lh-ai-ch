@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { useState, useEffect, useRef } from 'react'
 import { Link } from 'react-router-dom'
 import { searchDocuments } from '../api'
 
@@ -7,37 +7,56 @@ function SearchBar() {
   const [results, setResults] = useState([])
   const [showResults, setShowResults] = useState(false)
   const [searching, setSearching] = useState(false)
+  const containerRef = useRef(null)
 
-  async function handleSearch(e) {
-    e.preventDefault()
-    if (!query.trim()) return
-
-    try {
-      setSearching(true)
-      const data = await searchDocuments(query)
-      setResults(data)
-      setShowResults(true)
-    } catch (err) {
-      console.error('Search failed:', err)
-    } finally {
-      setSearching(false)
+  useEffect(() => {
+    if (!query.trim()) {
+      setResults([])
+      setShowResults(false)
+      return
     }
-  }
+
+    const debounceTimer = setTimeout(async () => {
+      try {
+        setSearching(true)
+        const data = await searchDocuments(query)
+        setResults(data)
+        setShowResults(true)
+      } catch (err) {
+        console.error('Search failed:', err)
+      } finally {
+        setSearching(false)
+      }
+    }, 300)
+
+    return () => clearTimeout(debounceTimer)
+  }, [query])
+
+  useEffect(() => {
+    function handleClickOutside(event) {
+      if (containerRef.current && !containerRef.current.contains(event.target)) {
+        setShowResults(false)
+      }
+    }
+
+    document.addEventListener('mousedown', handleClickOutside)
+    return () => document.removeEventListener('mousedown', handleClickOutside)
+  }, [])
 
   return (
-    <div className="search-container">
-      <form className="search-bar" onSubmit={handleSearch}>
-        <input
-          type="text"
-          placeholder="Search documents..."
-          value={query}
-          onChange={(e) => setQuery(e.target.value)}
-          onFocus={() => results.length > 0 && setShowResults(true)}
-        />
-        <button type="submit" disabled={searching}>
-          {searching ? '...' : 'Search'}
-        </button>
-      </form>
+    <div className="search-container" ref={containerRef}>
+      <div className="search-bar">
+        <div className="search-input-wrapper">
+          <input
+            type="text"
+            placeholder="Search documents..."
+            value={query}
+            onChange={(e) => setQuery(e.target.value)}
+            onFocus={() => results.length > 0 && setShowResults(true)}
+          />
+          {searching && <span className="search-spinner"></span>}
+        </div>
+      </div>
       {showResults && (
         <div className="search-results">
           {results.length === 0 ? (
