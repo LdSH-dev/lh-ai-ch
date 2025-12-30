@@ -1295,3 +1295,141 @@ For existing records without `file_path`, the physical files will remain on disk
 - `backend/app/models.py` - Added `file_path` column
 - `backend/app/routes/documents.py` - Updated upload and delete endpoints
 
+---
+
+## BUG-004: Uploaded File Not Cleaned Up on Processing Error
+
+**Type:** BUG / RESOURCE LEAK
+
+### Summary
+
+The `upload_document` endpoint in `documents.py` (line 166) saved the uploaded PDF file to disk before processing it with `extract_text_from_pdf()`. If the PDF processing failed (corrupted file, unsupported format, etc.), the file remained on disk as orphaned data.
+
+**Problematic code:**
+```python
+@router.post("/documents")
+async def upload_document(file: UploadFile, db: AsyncSession = Depends(get_db)):
+    # ... validation ...
+    
+    with open(file_path, "wb") as f:
+        f.write(content)  # File is saved to disk
+    
+    text_content, page_count = await extract_text_from_pdf(file_path)  # If this fails...
+    
+    # ... create document record ...
+    # The file is never cleaned up!
+```
+
+This is a significant issue because:
+
+1. **Storage exhaustion** - Failed uploads accumulate on disk, eventually filling up storage
+2. **Resource waste** - Corrupted or malformed PDFs that can never be processed remain on disk indefinitely
+3. **No error feedback** - The original error from PDF processing was lost, replaced by a generic 500 error
+4. **Inconsistent state** - Files exist on disk with no corresponding database record
+
+### Solution
+
+Implemented proper **error handling with cleanup** using try/except:
+
+1. **Catch processing errors** - Wrap `extract_text_from_pdf()` in a try/except block
+2. **Clean up on failure** - Delete the physical file before re-raising the error
+3. **Meaningful error message** - Return a 422 status with the original error message for debugging
+4. **Graceful cleanup errors** - Ignore errors during cleanup since the original error is more important
+
+**Fixed code:**
+```python
+@router.post("/documents")
+async def upload_document(file: UploadFile, db: AsyncSession = Depends(get_db)):
+    # ... validation ...
+    
+    with open(file_path, "wb") as f:
+        f.write(content)
+
+    # Extract text from the PDF, cleaning up the file if extraction fails
+    try:
+        text_content, page_count = await extract_text_from_pdf(file_path)
+    except Exception as e:
+        # Clean up the file on disk before propagating the error
+        try:
+            if os.path.isfile(file_path):
+                os.remove(file_path)
+        except OSError:
+            pass  # Ignore cleanup errors, the original error is more important
+        raise HTTPException(
+            status_code=422,
+            detail=f"Failed to process PDF file: {str(e)}"
+        )
+
+    # ... create document record ...
+```
+
+### Error Handling Flow
+
+```
+┌─────────────────────────────────────────────────────────────┐
+│                    POST /documents                           │
+└─────────────────────────────────────────────────────────────┘
+                            │
+                            ▼
+                ┌───────────────────────┐
+                │   Validate PDF file    │
+                └───────────────────────┘
+                            │
+                            ▼
+                ┌───────────────────────┐
+                │   Save file to disk    │
+                └───────────────────────┘
+                            │
+                            ▼
+                ┌───────────────────────┐
+                │ Extract text from PDF  │
+                └───────────────────────┘
+                            │
+              ┌─────────────┴─────────────┐
+              │                           │
+          Exception                    Success
+              │                           │
+              ▼                           ▼
+    ┌──────────────────┐      ┌─────────────────────┐
+    │ Delete file from │      │ Create DB record    │
+    │ disk (cleanup)   │      └─────────────────────┘
+    └──────────────────┘                  │
+              │                           ▼
+              ▼                  ┌─────────────────────┐
+    ┌──────────────────┐         │ Return success      │
+    │ Return 422 error │         └─────────────────────┘
+    │ with details     │
+    └──────────────────┘
+```
+
+### Error Response
+
+When PDF processing fails, the endpoint now returns:
+
+| HTTP Status | Response Body |
+|-------------|---------------|
+| 422 | `{"detail": "Failed to process PDF file: <original error message>"}` |
+
+### Impact Comparison
+
+| Scenario | Before | After |
+|----------|--------|-------|
+| Corrupted PDF uploaded | File left on disk, 500 error | File cleaned up, 422 with details |
+| Password-protected PDF | File left on disk, 500 error | File cleaned up, 422 with details |
+| Unsupported PDF format | File left on disk, 500 error | File cleaned up, 422 with details |
+| Valid PDF | File kept, record created | File kept, record created |
+
+### Design Decisions
+
+1. **HTTP 422 Unprocessable Entity** - This status is more appropriate than 400 (Bad Request) because the file passed validation but couldn't be processed semantically.
+
+2. **Include original error message** - Helps debugging by revealing why the PDF couldn't be processed (e.g., "document is encrypted", "invalid PDF structure").
+
+3. **Silent cleanup errors** - If file deletion fails during cleanup, we ignore it because the original processing error is more important to report.
+
+4. **Check file exists before delete** - Uses `os.path.isfile()` to avoid errors if the file somehow doesn't exist.
+
+### Files Changed
+
+- `backend/app/routes/documents.py`
+

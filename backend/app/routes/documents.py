@@ -163,7 +163,21 @@ async def upload_document(file: UploadFile, db: AsyncSession = Depends(get_db)):
 
     with open(file_path, "wb") as f:
         f.write(content)
-    text_content, page_count = await extract_text_from_pdf(file_path)
+
+    # Extract text from the PDF, cleaning up the file if extraction fails
+    try:
+        text_content, page_count = await extract_text_from_pdf(file_path)
+    except Exception as e:
+        # Clean up the file on disk before propagating the error
+        try:
+            if os.path.isfile(file_path):
+                os.remove(file_path)
+        except OSError:
+            pass  # Ignore cleanup errors, the original error is more important
+        raise HTTPException(
+            status_code=422,
+            detail=f"Failed to process PDF file: {str(e)}"
+        )
 
     document = Document(
         filename=file.filename,
