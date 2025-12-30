@@ -1,5 +1,6 @@
-from sqlalchemy import Column, Integer, String, Text, DateTime, ForeignKey
+from sqlalchemy import Column, Index, Integer, String, Text, DateTime, ForeignKey
 from sqlalchemy.orm import relationship
+from sqlalchemy.dialects.postgresql import TSVECTOR
 from datetime import datetime
 
 from app.database import Base
@@ -12,9 +13,20 @@ class Document(Base):
     filename = Column(String(255), nullable=False)
     file_path = Column(String(512), nullable=True)  # Path to physical file on disk
     content = Column(Text)
+    # Pre-computed tsvector for full-text search (populated on insert/update)
+    search_vector = Column(TSVECTOR, nullable=True)
     file_size = Column(Integer)
     page_count = Column(Integer)
     created_at = Column(DateTime, default=datetime.utcnow)
+
+    # GIN index for fast full-text search queries
+    __table_args__ = (
+        Index(
+            "ix_documents_search_vector",
+            search_vector,
+            postgresql_using="gin",
+        ),
+    )
 
     processing_status = relationship(
         "ProcessingStatus",

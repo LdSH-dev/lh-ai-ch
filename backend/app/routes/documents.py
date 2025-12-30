@@ -4,7 +4,7 @@ import uuid
 from datetime import datetime
 
 from fastapi import APIRouter, Depends, UploadFile, HTTPException, Query
-from sqlalchemy import select, func
+from sqlalchemy import select, func, text
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
@@ -189,6 +189,20 @@ async def upload_document(file: UploadFile, db: AsyncSession = Depends(get_db)):
     db.add(document)
     await db.commit()
     await db.refresh(document)
+
+    # Populate the search_vector using PostgreSQL's to_tsvector function
+    # This is done as a separate UPDATE to use the database's text processing
+    # Using 'portuguese' configuration for proper stemming and stop words
+    if text_content:
+        await db.execute(
+            text("""
+                UPDATE documents 
+                SET search_vector = to_tsvector('portuguese', :content)
+                WHERE id = :doc_id
+            """),
+            {"content": text_content, "doc_id": document.id}
+        )
+        await db.commit()
 
     processing_status = ProcessingStatus(
         document_id=document.id,
