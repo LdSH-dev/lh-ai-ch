@@ -1,7 +1,14 @@
 import { useState } from 'react'
-import { uploadDocument } from '../api'
+import { uploadDocument, ApiError } from '../api'
 
-function UploadForm() {
+/**
+ * UploadForm component for uploading PDF documents.
+ * 
+ * @param {Object} props
+ * @param {Function} props.onUploadSuccess - Callback called after a successful upload.
+ *                                           Used to notify parent components to refresh data.
+ */
+function UploadForm({ onUploadSuccess }) {
   const [file, setFile] = useState(null)
   const [uploading, setUploading] = useState(false)
   const [error, setError] = useState(null)
@@ -16,10 +23,15 @@ function UploadForm() {
       await uploadDocument(file)
       setFile(null)
       e.target.reset()
-      window.location.reload()
+      // Notify parent component of successful upload instead of full page reload
+      if (onUploadSuccess) {
+        onUploadSuccess()
+      }
     } catch (err) {
-      // Extract error message from backend response if available
-      const errorMessage = err.response?.data?.detail || 'Failed to upload document'
+      // Extract error message from ApiError or fallback to generic message
+      const errorMessage = err instanceof ApiError 
+        ? err.detail || err.message 
+        : 'Failed to upload document'
       setError(errorMessage)
     } finally {
       setUploading(false)

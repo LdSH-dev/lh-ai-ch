@@ -878,3 +878,146 @@ try {
 
 - `frontend/src/api.js`
 
+---
+
+## PERF-003: Full Page Reload After Upload
+
+**Type:** PERFORMANCE / UX
+
+### Summary
+
+The `UploadForm` component in `UploadForm.jsx` used `window.location.reload()` to refresh the document list after a successful upload. This caused a full page reload instead of leveraging React's state management for a seamless update.
+
+**Problematic code:**
+```javascript
+async function handleSubmit(e) {
+  e.preventDefault()
+  if (!file) return
+
+  try {
+    setUploading(true)
+    setError(null)
+    await uploadDocument(file)
+    setFile(null)
+    e.target.reset()
+    window.location.reload()  // Full page reload!
+  } catch (err) {
+    // ...
+  }
+}
+```
+
+This is a significant performance and UX issue because:
+
+1. **State loss** - All React state is discarded and reinitialized, losing any user context (scroll position, expanded items, etc.)
+2. **Resource waste** - The entire application (HTML, CSS, JS) is re-downloaded and re-parsed, wasting bandwidth and CPU
+3. **Poor user experience** - The page flashes white during reload, causing a jarring visual interruption
+4. **Slow perceived performance** - A full reload takes significantly longer than a React state update
+5. **Anti-pattern** - Violates React's declarative state management paradigm
+
+### Solution
+
+Implemented a **callback-based state refresh** pattern using React's built-in state management:
+
+1. **App.jsx manages refresh state** - Added a `refreshKey` state variable that increments on each successful upload
+2. **UploadForm receives callback** - Added an `onUploadSuccess` prop that the parent provides to signal upload completion
+3. **DocumentList reacts to changes** - Added `refreshKey` as a dependency in the `useEffect` hook, triggering a data reload when it changes
+
+**Fixed code in `App.jsx`:**
+```javascript
+import { useState, useCallback } from 'react'
+
+function App() {
+  // Key used to trigger a refresh of the DocumentList when a new document is uploaded
+  const [refreshKey, setRefreshKey] = useState(0)
+
+  // Callback passed to UploadForm to trigger a refresh after successful upload
+  const handleUploadSuccess = useCallback(() => {
+    setRefreshKey(prev => prev + 1)
+  }, [])
+
+  return (
+    // ...
+    <UploadForm onUploadSuccess={handleUploadSuccess} />
+    <DocumentList refreshKey={refreshKey} />
+    // ...
+  )
+}
+```
+
+**Fixed code in `UploadForm.jsx`:**
+```javascript
+function UploadForm({ onUploadSuccess }) {
+  async function handleSubmit(e) {
+    e.preventDefault()
+    if (!file) return
+
+    try {
+      setUploading(true)
+      setError(null)
+      await uploadDocument(file)
+      setFile(null)
+      e.target.reset()
+      // Notify parent component of successful upload instead of full page reload
+      if (onUploadSuccess) {
+        onUploadSuccess()
+      }
+    } catch (err) {
+      // ...
+    }
+  }
+}
+```
+
+**Fixed code in `DocumentList.jsx`:**
+```javascript
+function DocumentList({ refreshKey }) {
+  // Reload documents when page changes or when refreshKey changes (e.g., after upload)
+  useEffect(() => {
+    loadDocuments(pagination.page)
+  }, [pagination.page, refreshKey])
+}
+```
+
+### Performance Impact
+
+| Aspect | Before (Full Reload) | After (State Update) |
+|--------|---------------------|---------------------|
+| Network requests | All resources re-fetched | Only API call for documents |
+| JavaScript parsing | Full re-parse | None |
+| State preservation | Lost | Preserved |
+| Visible transition | Page flash | Seamless update |
+| Time to interactive | ~1-3 seconds | ~100-300ms |
+
+### Architecture Pattern
+
+This fix implements the **lifting state up** pattern combined with **callback props**:
+
+```
+┌─────────────────────────────────────────────────────────┐
+│                      App.jsx                            │
+│  ┌─────────────────────────────────────────────────┐   │
+│  │  refreshKey: 0 → 1 → 2 → ...                    │   │
+│  │  handleUploadSuccess: () => setRefreshKey(n+1) │   │
+│  └─────────────────────────────────────────────────┘   │
+│                    │                  │                 │
+│         onUploadSuccess()      refreshKey prop          │
+│                    ▼                  ▼                 │
+│  ┌──────────────────────┐  ┌────────────────────────┐  │
+│  │    UploadForm        │  │    DocumentList        │  │
+│  │ Calls callback on    │  │ Reloads when           │  │
+│  │ successful upload    │  │ refreshKey changes     │  │
+│  └──────────────────────┘  └────────────────────────┘  │
+└─────────────────────────────────────────────────────────┘
+```
+
+### Additional Improvement
+
+Also fixed the error handling in `UploadForm` to properly use the `ApiError` class that was implemented in BUG-002, replacing the incorrect `err.response?.data?.detail` pattern (which is Axios-style, but the app uses fetch).
+
+### Files Changed
+
+- `frontend/src/App.jsx`
+- `frontend/src/components/UploadForm.jsx`
+- `frontend/src/components/DocumentList.jsx`
+

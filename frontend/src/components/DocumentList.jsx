@@ -4,7 +4,15 @@ import { getDocuments } from '../api'
 
 const PAGE_SIZE = 20
 
-function DocumentList() {
+/**
+ * DocumentList component displays a paginated list of documents.
+ * 
+ * @param {Object} props
+ * @param {number} props.refreshKey - A key that triggers a data refresh when changed.
+ *                                    Used by parent components to signal that the list
+ *                                    should be reloaded (e.g., after a new upload).
+ */
+function DocumentList({ refreshKey }) {
   const [documents, setDocuments] = useState([])
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState(null)
@@ -15,9 +23,10 @@ function DocumentList() {
     totalPages: 1,
   })
 
+  // Reload documents when page changes or when refreshKey changes (e.g., after upload)
   useEffect(() => {
     loadDocuments(pagination.page)
-  }, [pagination.page])
+  }, [pagination.page, refreshKey])
 
   async function loadDocuments(page) {
     try {
