@@ -1,5 +1,151 @@
 # Findings
 
+## SEC-005: No File Type Validation in Upload
+
+**Type:** SECURITY
+
+### Summary
+
+The `upload_document` endpoint in `documents.py` accepted any file type uploaded by users, not just PDF files. There was no validation of file extension, content type, or file signature (magic bytes).
+
+**Vulnerable code:**
+```python
+@router.post("/documents")
+async def upload_document(file: UploadFile, db: AsyncSession = Depends(get_db)):
+    os.makedirs(settings.UPLOAD_DIR, exist_ok=True)
+    
+    # No validation of file type!
+    # Any file could be uploaded: .exe, .php, .js, etc.
+    
+    with open(file_path, "wb") as f:
+        content = await file.read()
+        f.write(content)
+```
+
+This is a critical security issue because:
+
+1. **Malicious file upload** - Attackers could upload executable files (.exe, .sh, .php) that may be executed on the server
+2. **Storage abuse** - Users could upload large non-PDF files, wasting storage resources
+3. **Processing errors** - The PDF processor would fail or behave unexpectedly when processing non-PDF files
+4. **MIME type spoofing** - Without magic bytes validation, attackers could disguise malicious files with fake extensions
+5. **Denial of Service** - Uploading extremely large files could exhaust server resources
+
+### Solution
+
+Implemented **multi-layer file validation** with defense in depth:
+
+1. **Filename validation** - Ensure filename is provided
+2. **Extension check** - Only `.pdf` extension is allowed
+3. **Content-Type check** - Only `application/pdf` MIME type is accepted
+4. **File size limit** - Maximum file size of 50 MB enforced
+5. **Empty file check** - Reject files with zero bytes
+6. **Magic bytes validation** - File must start with `%PDF` signature (bytes: 0x25 0x50 0x44 0x46)
+
+**Fixed code:**
+```python
+# File validation constants
+ALLOWED_CONTENT_TYPES = {"application/pdf"}
+ALLOWED_EXTENSIONS = {".pdf"}
+PDF_MAGIC_BYTES = b"%PDF"  # PDF files start with this signature
+MAX_FILE_SIZE = 50 * 1024 * 1024  # 50 MB
+
+
+async def validate_pdf_file(file: UploadFile) -> bytes:
+    """
+    Validates that the uploaded file is a valid PDF.
+    
+    Performs multi-layer validation:
+    1. Filename validation - must have a filename
+    2. Extension check - filename must end with .pdf
+    3. Content-Type check - must be application/pdf
+    4. File size check - must not exceed maximum allowed size
+    5. Empty file check - must have content
+    6. Magic bytes check - file must start with %PDF signature
+    
+    Returns the file content if valid.
+    Raises HTTPException if any validation fails.
+    """
+    # 1. Validate filename exists
+    if not file.filename:
+        raise HTTPException(status_code=400, detail="Filename is required.")
+    
+    # 2. Validate file extension
+    ext = os.path.splitext(file.filename)[1].lower()
+    if ext not in ALLOWED_EXTENSIONS:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Invalid file extension '{ext}'. Only PDF files (.pdf) are allowed."
+        )
+    
+    # 3. Validate Content-Type
+    if file.content_type not in ALLOWED_CONTENT_TYPES:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Invalid content type '{file.content_type}'. Only PDF files (application/pdf) are allowed."
+        )
+    
+    # 4. Read file content for size and magic bytes validation
+    content = await file.read()
+    
+    # 5. Validate file size
+    file_size = len(content)
+    if file_size > MAX_FILE_SIZE:
+        max_size_mb = MAX_FILE_SIZE // (1024 * 1024)
+        raise HTTPException(
+            status_code=400,
+            detail=f"File too large. Maximum allowed size is {max_size_mb} MB."
+        )
+    
+    # 6. Validate file is not empty
+    if file_size == 0:
+        raise HTTPException(status_code=400, detail="File is empty.")
+    
+    # 7. Validate PDF magic bytes (signature)
+    if not content.startswith(PDF_MAGIC_BYTES):
+        raise HTTPException(
+            status_code=400,
+            detail="Invalid PDF file. The file content does not match PDF format signature."
+        )
+    
+    return content
+
+
+@router.post("/documents")
+async def upload_document(file: UploadFile, db: AsyncSession = Depends(get_db)):
+    # Validate that the file is a valid PDF and get its content
+    content = await validate_pdf_file(file)
+    file_size = len(content)
+    # ... rest of the function
+```
+
+### Security Layers
+
+| Layer | Check | Protection Against |
+|-------|-------|-------------------|
+| 1 | Filename present | Missing filename attacks |
+| 2 | Extension `.pdf` | Basic file type filtering |
+| 3 | Content-Type `application/pdf` | MIME type mismatch |
+| 4 | Size ≤ 50 MB | DoS via large files |
+| 5 | Size > 0 | Empty file uploads |
+| 6 | Magic bytes `%PDF` | Extension spoofing |
+
+### Error Messages
+
+| Scenario | HTTP Status | Error Message |
+|----------|-------------|---------------|
+| No filename | 400 | Filename is required. |
+| Wrong extension | 400 | Invalid file extension '{ext}'. Only PDF files (.pdf) are allowed. |
+| Wrong content type | 400 | Invalid content type '{type}'. Only PDF files (application/pdf) are allowed. |
+| File too large | 400 | File too large ({size} MB). Maximum allowed size is 50 MB. |
+| Empty file | 400 | File is empty. Please upload a valid PDF file. |
+| Invalid signature | 400 | Invalid PDF file. The file content does not match PDF format signature. |
+
+### Files Changed
+
+- `backend/app/routes/documents.py`
+
+---
+
 ## PERF-002: No Pagination in Documents Listing
 
 **Type:** PERFORMANCE

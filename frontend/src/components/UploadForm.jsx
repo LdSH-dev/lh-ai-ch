@@ -18,7 +18,9 @@ function UploadForm() {
       e.target.reset()
       window.location.reload()
     } catch (err) {
-      setError('Failed to upload document')
+      // Extract error message from backend response if available
+      const errorMessage = err.response?.data?.detail || 'Failed to upload document'
+      setError(errorMessage)
     } finally {
       setUploading(false)
     }
@@ -31,6 +33,7 @@ function UploadForm() {
       <form onSubmit={handleSubmit}>
         <input
           type="file"
+          accept=".pdf,application/pdf"
           onChange={(e) => setFile(e.target.files[0])}
           disabled={uploading}
         />

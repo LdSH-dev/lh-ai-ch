@@ -18,6 +18,12 @@ from app.config import settings
 DEFAULT_PAGE_SIZE = 20
 MAX_PAGE_SIZE = 100
 
+# File validation constants
+ALLOWED_CONTENT_TYPES = {"application/pdf"}
+ALLOWED_EXTENSIONS = {".pdf"}
+PDF_MAGIC_BYTES = b"%PDF"  # PDF files start with this signature
+MAX_FILE_SIZE = 50 * 1024 * 1024  # 50 MB
+
 router = APIRouter()
 
 
@@ -67,8 +73,80 @@ def validate_file_path(base_dir: str, file_path: str) -> bool:
     return file_path_resolved.startswith(base_dir_resolved + os.sep)
 
 
+async def validate_pdf_file(file: UploadFile) -> bytes:
+    """
+    Validates that the uploaded file is a valid PDF.
+    
+    Performs multi-layer validation:
+    1. Filename validation - must have a filename
+    2. Extension check - filename must end with .pdf
+    3. Content-Type check - must be application/pdf
+    4. File size check - must not exceed maximum allowed size
+    5. Empty file check - must have content
+    6. Magic bytes check - file must start with %PDF signature
+    
+    Returns the file content if valid.
+    Raises HTTPException if any validation fails.
+    """
+    # 1. Validate filename exists
+    if not file.filename:
+        raise HTTPException(
+            status_code=400,
+            detail="Filename is required."
+        )
+    
+    # 2. Validate file extension
+    ext = os.path.splitext(file.filename)[1].lower()
+    if ext not in ALLOWED_EXTENSIONS:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Invalid file extension '{ext}'. Only PDF files (.pdf) are allowed."
+        )
+    
+    # 3. Validate Content-Type
+    if file.content_type not in ALLOWED_CONTENT_TYPES:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Invalid content type '{file.content_type}'. Only PDF files (application/pdf) are allowed."
+        )
+    
+    # 4. Read file content for size and magic bytes validation
+    content = await file.read()
+    
+    # 5. Validate file size
+    file_size = len(content)
+    if file_size > MAX_FILE_SIZE:
+        max_size_mb = MAX_FILE_SIZE // (1024 * 1024)
+        raise HTTPException(
+            status_code=400,
+            detail=f"File too large ({file_size // (1024 * 1024)} MB). Maximum allowed size is {max_size_mb} MB."
+        )
+    
+    # 6. Validate file is not empty
+    if file_size == 0:
+        raise HTTPException(
+            status_code=400,
+            detail="File is empty. Please upload a valid PDF file."
+        )
+    
+    # 7. Validate PDF magic bytes (signature)
+    # PDF files must start with "%PDF" (bytes: 0x25 0x50 0x44 0x46)
+    if not content.startswith(PDF_MAGIC_BYTES):
+        raise HTTPException(
+            status_code=400,
+            detail="Invalid PDF file. The file content does not match PDF format signature."
+        )
+    
+    return content
+
+
 @router.post("/documents")
 async def upload_document(file: UploadFile, db: AsyncSession = Depends(get_db)):
+    # Validate that the file is a valid PDF and get its content
+    # This performs extension, content-type, size, and magic bytes validation
+    content = await validate_pdf_file(file)
+    file_size = len(content)
+    
     os.makedirs(settings.UPLOAD_DIR, exist_ok=True)
     
     # Sanitize filename to prevent path traversal attacks
@@ -84,10 +162,7 @@ async def upload_document(file: UploadFile, db: AsyncSession = Depends(get_db)):
         raise HTTPException(status_code=400, detail="Invalid file path")
 
     with open(file_path, "wb") as f:
-        content = await file.read()
         f.write(content)
-
-    file_size = len(content)
     text_content, page_count = await extract_text_from_pdf(file_path)
 
     document = Document(
