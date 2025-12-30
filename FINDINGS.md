@@ -1,5 +1,95 @@
 # Findings
 
+## SEC-003: Hardcoded Credentials in Configuration
+
+**Type:** SECURITY
+
+### Summary
+
+The `config.py` file contained hardcoded sensitive credentials directly in the source code, including the database password and a secret key.
+
+**Vulnerable code:**
+```python
+class Settings:
+    DATABASE_URL: str = os.getenv(
+        "DATABASE_URL",
+        "postgresql+asyncpg://postgres:supersecretpassword123@localhost:5432/docproc"
+    )
+    SECRET_KEY: str = "my-super-secret-key-do-not-share"
+```
+
+This is a critical security issue because:
+1. **Credentials in version control** - Anyone with access to the repository can see the credentials
+2. **No environment separation** - The same credentials would be used in dev, test, and production
+3. **Difficult rotation** - Changing credentials requires code changes and redeployment
+4. **Audit trail issues** - No way to track who accessed the credentials
+
+### Solution
+
+Implemented a secure configuration approach following best practices:
+
+1. **Environment variables only** - All sensitive values must come from environment variables with no fallback defaults for required security values
+2. **Validation at startup** - Added a `_validate_required_vars()` method that checks for required environment variables at application boot time, failing fast with a clear error message if any are missing
+3. **Docker Compose integration** - Updated `docker-compose.yml` to use environment variable substitution with the `${VAR:?error}` syntax for required variables
+4. **Environment template** - Created `.env.example` documenting all required and optional environment variables
+
+**Fixed code:**
+```python
+import os
+
+
+class Settings:
+    DATABASE_URL: str = os.getenv("DATABASE_URL")
+    SECRET_KEY: str = os.getenv("SECRET_KEY")
+    UPLOAD_DIR: str = os.getenv("UPLOAD_DIR", "/tmp/docproc_uploads")
+
+    def __init__(self):
+        self._validate_required_vars()
+
+    def _validate_required_vars(self):
+        """Valida variáveis obrigatórias no boot da aplicação."""
+        missing = []
+        if not self.DATABASE_URL:
+            missing.append("DATABASE_URL")
+        if not self.SECRET_KEY:
+            missing.append("SECRET_KEY")
+        
+        if missing:
+            raise EnvironmentError(
+                f"Missing required environment variables: {', '.join(missing)}. "
+                "Please set them before starting the application."
+            )
+
+
+settings = Settings()
+```
+
+**Docker Compose updated:**
+```yaml
+environment:
+  DATABASE_URL: ${DATABASE_URL:-postgresql+asyncpg://postgres:postgres@db:5432/docproc}
+  SECRET_KEY: ${SECRET_KEY:?SECRET_KEY is required}
+```
+
+### Required Environment Variables
+
+| Variable | Required | Description |
+|----------|----------|-------------|
+| `DATABASE_URL` | Yes | PostgreSQL connection string |
+| `SECRET_KEY` | Yes | Secret key for signing tokens/sessions |
+| `POSTGRES_USER` | No | PostgreSQL username (default: postgres) |
+| `POSTGRES_PASSWORD` | Yes | PostgreSQL password |
+| `POSTGRES_DB` | No | PostgreSQL database name (default: docproc) |
+| `UPLOAD_DIR` | No | File upload directory (default: /tmp/docproc_uploads) |
+
+### Files Changed
+
+- `backend/app/config.py`
+- `docker-compose.yml`
+- `.env.example` (new file)
+
+---
+
 ## SEC-001: SQL Injection in Search Endpoint
 
 **Type:** SECURITY
