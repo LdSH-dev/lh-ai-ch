@@ -1,6 +1,8 @@
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 from datetime import datetime
-from typing import Optional
+from typing import Optional, Generic, TypeVar, List
+
+T = TypeVar("T")
 
 
 class DocumentBase(BaseModel):
@@ -30,3 +32,17 @@ class SearchResult(BaseModel):
     id: int
     filename: str
     snippet: str
+
+
+class PaginatedResponse(BaseModel, Generic[T]):
+    """Generic paginated response wrapper."""
+    items: List[T]
+    total: int
+    page: int
+    page_size: int
+    total_pages: int
+
+
+class DocumentListResponse(PaginatedResponse[DocumentResponse]):
+    """Paginated response for document listing."""
+    pass

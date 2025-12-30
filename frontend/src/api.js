@@ -10,8 +10,8 @@ export async function uploadDocument(file) {
   return response.json();
 }
 
-export async function getDocuments() {
-  const response = await fetch(`${API_BASE}/documents`);
+export async function getDocuments(page = 1, pageSize = 20) {
+  const response = await fetch(`${API_BASE}/documents?page=${page}&page_size=${pageSize}`);
   return response.json();
 }
 

@@ -1,5 +1,137 @@
 # Findings
 
+## PERF-002: No Pagination in Documents Listing
+
+**Type:** PERFORMANCE
+
+### Summary
+
+The `list_documents` endpoint in `documents.py` returned ALL documents from the database in a single response, without any pagination. This was found at line 52 of the file.
+
+**Problematic code:**
+```python
+@router.get("/documents")
+async def list_documents(db: AsyncSession = Depends(get_db)):
+    result = await db.execute(
+        select(Document).options(selectinload(Document.processing_status))
+    )
+    documents = result.scalars().all()  # Returns ALL documents!
+    
+    return [DocumentResponse(...) for doc in documents]
+```
+
+This is a critical performance issue because:
+
+1. **Memory exhaustion** - Loading thousands of documents into memory at once can cause OOM errors
+2. **Slow response times** - Large payloads take longer to serialize and transmit over the network
+3. **Poor user experience** - Users must wait for the entire dataset to load before seeing any results
+4. **Database load** - Fetching all rows puts unnecessary strain on the database
+5. **Frontend performance** - Rendering thousands of DOM elements degrades UI responsiveness
+
+### Solution
+
+Implemented **cursor-based pagination** with configurable page size and sensible defaults:
+
+1. **Query parameters** - Added `page` (1-indexed) and `page_size` (default: 20, max: 100) parameters
+2. **Total count query** - Added a COUNT query to provide total records for UI pagination controls
+3. **Offset/limit pagination** - Used SQLAlchemy's `.offset()` and `.limit()` for efficient slicing
+4. **Sorted results** - Added `ORDER BY created_at DESC` for consistent ordering
+5. **Paginated response schema** - Created `DocumentListResponse` with metadata (total, page, page_size, total_pages)
+6. **Frontend pagination controls** - Added navigation buttons and page indicator
+
+**Fixed code in `schemas.py`:**
+```python
+class PaginatedResponse(BaseModel, Generic[T]):
+    """Generic paginated response wrapper."""
+    items: List[T]
+    total: int
+    page: int
+    page_size: int
+    total_pages: int
+
+
+class DocumentListResponse(PaginatedResponse[DocumentResponse]):
+    """Paginated response for document listing."""
+    pass
+```
+
+**Fixed code in `documents.py`:**
+```python
+DEFAULT_PAGE_SIZE = 20
+MAX_PAGE_SIZE = 100
+
+@router.get("/documents", response_model=DocumentListResponse)
+async def list_documents(
+    page: int = Query(1, ge=1, description="Page number (1-indexed)"),
+    page_size: int = Query(DEFAULT_PAGE_SIZE, ge=1, le=MAX_PAGE_SIZE, description="Items per page"),
+    db: AsyncSession = Depends(get_db),
+):
+    # Count total documents
+    count_result = await db.execute(select(func.count(Document.id)))
+    total = count_result.scalar_one()
+    
+    # Calculate pagination
+    total_pages = (total + page_size - 1) // page_size if total > 0 else 1
+    offset = (page - 1) * page_size
+    
+    # Fetch paginated results
+    result = await db.execute(
+        select(Document)
+        .options(selectinload(Document.processing_status))
+        .order_by(Document.created_at.desc())
+        .offset(offset)
+        .limit(page_size)
+    )
+    documents = result.scalars().all()
+
+    return DocumentListResponse(
+        items=[...],
+        total=total,
+        page=page,
+        page_size=page_size,
+        total_pages=total_pages,
+    )
+```
+
+### Performance Impact
+
+| Scenario | Before | After (page_size=20) |
+|----------|--------|---------------------|
+| 100 documents | 100 rows fetched | 20 rows fetched |
+| 1,000 documents | 1,000 rows fetched | 20 rows fetched |
+| 10,000 documents | 10,000 rows fetched | 20 rows fetched |
+
+### API Changes
+
+**Endpoint:** `GET /documents`
+
+**New Query Parameters:**
+| Parameter | Type | Default | Min | Max | Description |
+|-----------|------|---------|-----|-----|-------------|
+| `page` | int | 1 | 1 | - | Page number (1-indexed) |
+| `page_size` | int | 20 | 1 | 100 | Items per page |
+
+**New Response Format:**
+```json
+{
+  "items": [...],
+  "total": 150,
+  "page": 1,
+  "page_size": 20,
+  "total_pages": 8
+}
+```
+
+### Files Changed
+
+- `backend/app/routes/documents.py`
+- `backend/app/schemas.py`
+- `frontend/src/api.js`
+- `frontend/src/components/DocumentList.jsx`
+- `frontend/src/App.css`
+
+---
+
 ## PERF-001: N+1 Query Problem in Documents Listing
 
 **Type:** PERFORMANCE

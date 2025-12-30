@@ -3,16 +3,20 @@ import re
 import uuid
 from datetime import datetime
 
-from fastapi import APIRouter, Depends, UploadFile, HTTPException
-from sqlalchemy import select
+from fastapi import APIRouter, Depends, UploadFile, HTTPException, Query
+from sqlalchemy import select, func
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
 from app.database import get_db
 from app.models import Document, ProcessingStatus
-from app.schemas import DocumentResponse, DocumentDetail
+from app.schemas import DocumentResponse, DocumentDetail, DocumentListResponse
 from app.services.pdf_processor import extract_text_from_pdf
 from app.config import settings
+
+# Pagination defaults
+DEFAULT_PAGE_SIZE = 20
+MAX_PAGE_SIZE = 100
 
 router = APIRouter()
 
@@ -107,16 +111,38 @@ async def upload_document(file: UploadFile, db: AsyncSession = Depends(get_db)):
     return {"id": document.id, "filename": document.filename}
 
 
-@router.get("/documents")
-async def list_documents(db: AsyncSession = Depends(get_db)):
+@router.get("/documents", response_model=DocumentListResponse)
+async def list_documents(
+    page: int = Query(1, ge=1, description="Page number (1-indexed)"),
+    page_size: int = Query(DEFAULT_PAGE_SIZE, ge=1, le=MAX_PAGE_SIZE, description="Items per page"),
+    db: AsyncSession = Depends(get_db),
+):
+    """
+    List documents with pagination.
+    
+    - **page**: Page number starting from 1
+    - **page_size**: Number of items per page (max 100)
+    """
+    # Count total documents
+    count_result = await db.execute(select(func.count(Document.id)))
+    total = count_result.scalar_one()
+    
+    # Calculate pagination
+    total_pages = (total + page_size - 1) // page_size if total > 0 else 1
+    offset = (page - 1) * page_size
+    
     # Use selectinload to eager load processing_status in a single query
     # This avoids the N+1 query problem
     result = await db.execute(
-        select(Document).options(selectinload(Document.processing_status))
+        select(Document)
+        .options(selectinload(Document.processing_status))
+        .order_by(Document.created_at.desc())
+        .offset(offset)
+        .limit(page_size)
     )
     documents = result.scalars().all()
 
-    return [
+    items = [
         DocumentResponse(
             id=doc.id,
             filename=doc.filename,
@@ -127,6 +153,14 @@ async def list_documents(db: AsyncSession = Depends(get_db)):
         )
         for doc in documents
     ]
+    
+    return DocumentListResponse(
+        items=items,
+        total=total,
+        page=page,
+        page_size=page_size,
+        total_pages=total_pages,
+    )
 
 
 @router.get("/documents/{document_id}")
