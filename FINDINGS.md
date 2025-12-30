@@ -60,3 +60,66 @@ The SearchBar component had multiple UX issues:
 - `frontend/src/components/SearchBar.jsx`
 - `frontend/src/App.css`
 
+---
+
+## SEC-002: Path Traversal in File Upload
+
+**Type:** SECURITY
+
+### Summary
+
+The document upload endpoint in `documents.py` was vulnerable to Path Traversal attacks. The filename provided by the user (`file.filename`) was used directly to construct the file path without any sanitization.
+
+**Vulnerable code:**
+```python
+file_path = os.path.join(settings.UPLOAD_DIR, file.filename)
+```
+
+An attacker could exploit this by uploading a file with a malicious name like `../../../etc/cron.d/malicious` or `..\..\..\..\Windows\System32\config` to write files outside the intended upload directory, potentially overwriting critical system files or planting malicious scripts.
+
+### Solution
+
+Implemented a multi-layer defense approach:
+
+1. **`sanitize_filename()` function** - Sanitizes the filename by:
+   - Extracting only the base filename using `os.path.basename()` (removes path components like `../`)
+   - Removing null bytes (`\x00`) which can be used to bypass checks
+   - Replacing potentially dangerous characters with underscores (keeps only `[a-zA-Z0-9._-]`)
+   - Rejecting empty filenames or special names like `.` and `..`
+   - Adding a UUID prefix to prevent filename collisions
+
+2. **`validate_file_path()` function** - Secondary validation that:
+   - Resolves the final path using `os.path.realpath()`
+   - Verifies the resolved path starts with the upload directory
+   - Prevents any bypasses through symlinks or other path manipulation
+
+**Fixed code:**
+```python
+def sanitize_filename(filename: str) -> str:
+    if not filename:
+        raise ValueError("Filename cannot be empty")
+    
+    safe_name = os.path.basename(filename)
+    safe_name = safe_name.replace('\x00', '')
+    safe_name = re.sub(r'[^\w.\-]', '_', safe_name)
+    
+    if not safe_name or safe_name in ('.', '..'):
+        raise ValueError("Invalid filename after sanitization")
+    
+    unique_prefix = uuid.uuid4().hex[:8]
+    safe_name = f"{unique_prefix}_{safe_name}"
+    
+    return safe_name
+
+# In the endpoint:
+safe_filename = sanitize_filename(file.filename)
+file_path = os.path.join(settings.UPLOAD_DIR, safe_filename)
+
+if not validate_file_path(settings.UPLOAD_DIR, file_path):
+    raise HTTPException(status_code=400, detail="Invalid file path")
+```
+
+### Files Changed
+
+- `backend/app/routes/documents.py`
+
