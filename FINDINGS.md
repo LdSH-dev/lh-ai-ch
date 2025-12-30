@@ -742,3 +742,139 @@ if not validate_file_path(settings.UPLOAD_DIR, file_path):
 
 - `backend/app/routes/documents.py`
 
+---
+
+## BUG-002: No HTTP Response Validation in API Client
+
+**Type:** BUG
+
+### Summary
+
+The `api.js` file did not validate HTTP responses before processing them. All functions called `response.json()` directly without checking `response.ok`, which means HTTP error responses (4xx, 5xx) were silently ignored.
+
+**Problematic code:**
+```javascript
+export async function uploadDocument(file) {
+  const formData = new FormData();
+  formData.append('file', file);
+  const response = await fetch(`${API_BASE}/documents`, {
+    method: 'POST',
+    body: formData,
+  });
+  return response.json();  // No check for response.ok!
+}
+
+export async function getDocuments(page = 1, pageSize = 20) {
+  const response = await fetch(`${API_BASE}/documents?page=${page}&page_size=${pageSize}`);
+  return response.json();  // No check for response.ok!
+}
+```
+
+This is a critical bug because:
+
+1. **Silent failures** - HTTP errors (400, 401, 403, 404, 500, etc.) are not detected, causing the app to proceed as if the request succeeded
+2. **Confusing behavior** - Users see no error feedback when operations fail, leading to poor UX
+3. **Hard to debug** - Errors go unnoticed until they cause downstream issues
+4. **Data inconsistency** - The frontend may show stale or incorrect data when backend operations fail
+5. **Security blindspots** - Authentication failures (401) or authorization errors (403) are ignored
+
+### Solution
+
+Implemented centralized HTTP response handling with proper error detection and reporting:
+
+1. **`ApiError` class** - Custom error class that captures HTTP status, status text, and server error detail
+2. **`handleResponse()` function** - Centralized handler that checks `response.ok` and throws `ApiError` on failure
+3. **Error detail extraction** - Attempts to parse error details from the response body (supports FastAPI's `detail` field)
+4. **Consistent error handling** - All API functions now use `handleResponse()` instead of direct `response.json()`
+
+**Fixed code:**
+```javascript
+/**
+ * Custom error class for API errors.
+ * Contains HTTP status code, status text, and parsed error detail from the server.
+ */
+export class ApiError extends Error {
+  constructor(status, statusText, detail) {
+    const message = detail || statusText || `HTTP Error ${status}`;
+    super(message);
+    this.name = 'ApiError';
+    this.status = status;
+    this.statusText = statusText;
+    this.detail = detail;
+  }
+}
+
+/**
+ * Handles the fetch response, checking for HTTP errors.
+ */
+async function handleResponse(response) {
+  if (!response.ok) {
+    let detail = null;
+    try {
+      const errorBody = await response.json();
+      detail = errorBody.detail || errorBody.message || JSON.stringify(errorBody);
+    } catch {
+      // Response body is not JSON or empty
+    }
+    throw new ApiError(response.status, response.statusText, detail);
+  }
+  return response.json();
+}
+
+export async function uploadDocument(file) {
+  const formData = new FormData();
+  formData.append('file', file);
+  const response = await fetch(`${API_BASE}/documents`, {
+    method: 'POST',
+    body: formData,
+  });
+  return handleResponse(response);  // Now properly validates response
+}
+
+export async function getDocuments(page = 1, pageSize = 20) {
+  const response = await fetch(`${API_BASE}/documents?page=${page}&page_size=${pageSize}`);
+  return handleResponse(response);  // Now properly validates response
+}
+```
+
+### Error Handling Comparison
+
+| Scenario | Before | After |
+|----------|--------|-------|
+| HTTP 400 (Bad Request) | Silently ignored | Throws `ApiError` with detail |
+| HTTP 401 (Unauthorized) | Silently ignored | Throws `ApiError` with status |
+| HTTP 404 (Not Found) | Silently ignored | Throws `ApiError` with detail |
+| HTTP 500 (Server Error) | Silently ignored | Throws `ApiError` with detail |
+| Successful response | Returns parsed JSON | Returns parsed JSON |
+
+### Usage Example
+
+Components can now properly handle API errors:
+
+```javascript
+import { uploadDocument, ApiError } from '../api';
+
+try {
+  const result = await uploadDocument(file);
+  // Handle success
+} catch (error) {
+  if (error instanceof ApiError) {
+    // Handle specific HTTP errors
+    if (error.status === 400) {
+      showError(`Validation error: ${error.detail}`);
+    } else if (error.status === 413) {
+      showError('File too large');
+    } else {
+      showError(`Upload failed: ${error.message}`);
+    }
+  } else {
+    // Handle network errors
+    showError('Network error. Please check your connection.');
+  }
+}
+```
+
+### Files Changed
+
+- `frontend/src/api.js`
+
