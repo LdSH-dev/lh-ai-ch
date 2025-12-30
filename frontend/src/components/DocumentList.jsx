@@ -1,6 +1,7 @@
 import { useState, useEffect } from 'react'
 import { Link } from 'react-router-dom'
 import { getDocuments } from '../api'
+import { formatFileSize } from '../utils/formatters'
 
 const PAGE_SIZE = 20
 
@@ -135,13 +136,6 @@ function DocumentList({ refreshKey }) {
       )}
     </div>
   )
-}
-
-function formatFileSize(bytes) {
-  if (!bytes) return 'Unknown size'
-  if (bytes < 1024) return bytes + ' B'
-  if (bytes < 1024 * 1024) return (bytes / 1024).toFixed(1) + ' KB'
-  return (bytes / (1024 * 1024)).toFixed(1) + ' MB'
 }
 
 export default DocumentList

@@ -1021,3 +1021,103 @@ Also fixed the error handling in `UploadForm` to properly use the `ApiError` cla
 - `frontend/src/components/UploadForm.jsx`
 - `frontend/src/components/DocumentList.jsx`
 
+---
+
+## CODE-001: Duplicated formatFileSize Function
+
+**Type:** CODE QUALITY
+
+### Summary
+
+The `formatFileSize` function was duplicated in two component files: `DocumentList.jsx` and `DocumentDetail.jsx`. Both files contained identical implementations of the same utility function.
+
+**Duplicated code in both files:**
+```javascript
+function formatFileSize(bytes) {
+  if (!bytes) return 'Unknown size'
+  if (bytes < 1024) return bytes + ' B'
+  if (bytes < 1024 * 1024) return (bytes / 1024).toFixed(1) + ' KB'
+  return (bytes / (1024 * 1024)).toFixed(1) + ' MB'
+}
+```
+
+This is a code quality issue because:
+
+1. **DRY violation** - Don't Repeat Yourself principle is violated, increasing maintenance burden
+2. **Inconsistency risk** - If one copy is updated but not the other, behavior becomes inconsistent
+3. **Increased bundle size** - The same code is included twice in the final JavaScript bundle
+4. **Harder testing** - The same logic needs to be tested in multiple places
+5. **Poor discoverability** - New developers may not know the function exists and create a third copy
+
+### Solution
+
+Implemented a **centralized utility module** following best practices:
+
+1. **Created `utils/formatters.js`** - A dedicated module for formatting utility functions
+2. **Added JSDoc documentation** - Function is now fully documented with examples
+3. **Single source of truth** - Both components import from the same module
+4. **Extensible pattern** - Future formatting functions can be added to the same module
+
+**New file `frontend/src/utils/formatters.js`:**
+```javascript
+/**
+ * Utility functions for formatting data values.
+ * Centralized formatting logic to avoid code duplication across components.
+ */
+
+/**
+ * Formats a file size in bytes to a human-readable string.
+ *
+ * @param {number|null|undefined} bytes - The file size in bytes.
+ * @returns {string} A formatted string like "1.5 MB", "256 KB", or "Unknown size".
+ *
+ * @example
+ * formatFileSize(1024)       // "1.0 KB"
+ * formatFileSize(1536000)    // "1.5 MB"
+ * formatFileSize(512)        // "512 B"
+ * formatFileSize(null)       // "Unknown size"
+ */
+export function formatFileSize(bytes) {
+  if (!bytes) return 'Unknown size'
+  if (bytes < 1024) return bytes + ' B'
+  if (bytes < 1024 * 1024) return (bytes / 1024).toFixed(1) + ' KB'
+  return (bytes / (1024 * 1024)).toFixed(1) + ' MB'
+}
+```
+
+**Updated components:**
+```javascript
+// DocumentList.jsx
+import { formatFileSize } from '../utils/formatters'
+
+// DocumentDetail.jsx
+import { formatFileSize } from '../utils/formatters'
+```
+
+### Code Quality Impact
+
+| Aspect | Before | After |
+|--------|--------|-------|
+| Function copies | 2 duplicate definitions | 1 centralized definition |
+| Bundle size | Function included twice | Function included once |
+| Maintenance | Update both files | Update single file |
+| Testing | Test in both components | Test in one utility module |
+| Documentation | No JSDoc | Full JSDoc with examples |
+
+### Project Structure
+
+```
+frontend/src/
+├── utils/
+│   └── formatters.js    ← NEW: Centralized utility functions
+├── components/
+│   ├── DocumentList.jsx   ← Updated: imports from utils
+│   └── DocumentDetail.jsx ← Updated: imports from utils
+```
+
+### Files Changed
+
+- `frontend/src/utils/formatters.js` (new file)
+- `frontend/src/components/DocumentList.jsx`
+- `frontend/src/components/DocumentDetail.jsx`
+

@@ -1,6 +1,7 @@
 import { useState, useEffect } from 'react'
 import { useParams, useNavigate } from 'react-router-dom'
 import { getDocument, deleteDocument } from '../api'
+import { formatFileSize } from '../utils/formatters'
 
 function DocumentDetail() {
   const { id } = useParams()
@@ -72,13 +73,6 @@ function DocumentDetail() {
       </div>
     </div>
   )
-}
-
-function formatFileSize(bytes) {
-  if (!bytes) return 'Unknown size'
-  if (bytes < 1024) return bytes + ' B'
-  if (bytes < 1024 * 1024) return (bytes / 1024).toFixed(1) + ' KB'
-  return (bytes / (1024 * 1024)).toFixed(1) + ' MB'
 }
 
 export default DocumentDetail
