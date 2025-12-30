@@ -1,5 +1,83 @@
 # Findings
 
+## PERF-001: N+1 Query Problem in Documents Listing
+
+**Type:** PERFORMANCE
+
+### Summary
+
+The `list_documents` endpoint in `documents.py` suffered from the classic N+1 Query Problem. For each document returned, a separate database query was executed to fetch its `ProcessingStatus`.
+
+**Problematic code:**
+```python
+@router.get("/documents")
+async def list_documents(db: AsyncSession = Depends(get_db)):
+    result = await db.execute(select(Document))  # 1 query
+    documents = result.scalars().all()
+
+    response = []
+    for doc in documents:
+        # N additional queries - one per document!
+        status_result = await db.execute(
+            select(ProcessingStatus).where(ProcessingStatus.document_id == doc.id)
+        )
+        status = status_result.scalar_one_or_none()
+        response.append(DocumentResponse(...))
+
+    return response
+```
+
+This is a critical performance issue because:
+
+1. **Linear query growth** - If there are 100 documents, 101 queries are executed (1 + 100)
+2. **Database connection overhead** - Each query incurs network round-trip latency
+3. **Poor scalability** - Response time degrades linearly with dataset size
+4. **Resource waste** - Excessive database load and connection pool exhaustion under load
+
+### Solution
+
+Implemented **eager loading** using SQLAlchemy's `selectinload()` strategy. This loads the related `ProcessingStatus` records in a single additional query, reducing total queries from N+1 to just 2 (one for documents, one for all related statuses).
+
+**Fixed code:**
+```python
+from sqlalchemy.orm import selectinload
+
+@router.get("/documents")
+async def list_documents(db: AsyncSession = Depends(get_db)):
+    # Use selectinload to eager load processing_status in a single query
+    # This avoids the N+1 query problem
+    result = await db.execute(
+        select(Document).options(selectinload(Document.processing_status))
+    )
+    documents = result.scalars().all()
+
+    return [
+        DocumentResponse(
+            id=doc.id,
+            filename=doc.filename,
+            file_size=doc.file_size,
+            page_count=doc.page_count,
+            status=doc.processing_status.status if doc.processing_status else "unknown",
+            created_at=doc.created_at,
+        )
+        for doc in documents
+    ]
+```
+
+### Performance Impact
+
+| Scenario | Before (N+1) | After (Eager Load) |
+|----------|--------------|-------------------|
+| 10 documents | 11 queries | 2 queries |
+| 100 documents | 101 queries | 2 queries |
+| 1000 documents | 1001 queries | 2 queries |
+
+### Files Changed
+
+- `backend/app/routes/documents.py`
+
+---
+
 ## SEC-004: Permissive CORS with Credentials
 
 **Type:** SECURITY

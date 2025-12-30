@@ -6,6 +6,7 @@ from datetime import datetime
 from fastapi import APIRouter, Depends, UploadFile, HTTPException
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm import selectinload
 
 from app.database import get_db
 from app.models import Document, ProcessingStatus
@@ -108,27 +109,24 @@ async def upload_document(file: UploadFile, db: AsyncSession = Depends(get_db)):
 
 @router.get("/documents")
 async def list_documents(db: AsyncSession = Depends(get_db)):
-    result = await db.execute(select(Document))
+    # Use selectinload to eager load processing_status in a single query
+    # This avoids the N+1 query problem
+    result = await db.execute(
+        select(Document).options(selectinload(Document.processing_status))
+    )
     documents = result.scalars().all()
 
-    response = []
-    for doc in documents:
-        status_result = await db.execute(
-            select(ProcessingStatus).where(ProcessingStatus.document_id == doc.id)
+    return [
+        DocumentResponse(
+            id=doc.id,
+            filename=doc.filename,
+            file_size=doc.file_size,
+            page_count=doc.page_count,
+            status=doc.processing_status.status if doc.processing_status else "unknown",
+            created_at=doc.created_at,
         )
-        status = status_result.scalar_one_or_none()
-        response.append(
-            DocumentResponse(
-                id=doc.id,
-                filename=doc.filename,
-                file_size=doc.file_size,
-                page_count=doc.page_count,
-                status=status.status if status else "unknown",
-                created_at=doc.created_at,
-            )
-        )
-
-    return response
+        for doc in documents
+    ]
 
 
 @router.get("/documents/{document_id}")
