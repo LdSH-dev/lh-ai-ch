@@ -1,5 +1,89 @@
 # Findings
 
+## MEM-001: Memory Leak in PDF Processor
+
+**Type:** MEMORY LEAK
+
+### Summary
+
+The `extract_text_from_pdf` function in `pdf_processor.py` opened PDF documents using `fitz.open()` but did not properly close them if an error occurred during text extraction. This caused a memory leak because the document handle remained open.
+
+**Vulnerable code:**
+```python
+async def extract_text_from_pdf(file_path: str) -> tuple[str, int]:
+    doc = fitz.open(file_path)  # Document opened
+    text = ""
+    for page in doc:
+        text += page.get_text()  # If error occurs here...
+    page_count = len(doc)
+    doc.close()  # ...this line is never reached!
+    return text, page_count
+```
+
+This is a critical issue because:
+
+1. **Memory exhaustion** - Each unclosed document keeps memory allocated, eventually exhausting server RAM
+2. **File handle leaks** - Open file handles accumulate, potentially hitting OS limits (`ulimit -n`)
+3. **Resource starvation** - Under heavy load, leaked resources can cause the application to crash or become unresponsive
+4. **Corrupted file access** - Open handles may prevent file deletion or modification
+
+### Solution
+
+Implemented proper resource management using a **context manager** (`with` statement). The `fitz.Document` class supports the context manager protocol, ensuring the document is automatically closed when exiting the `with` block, regardless of whether an exception occurred.
+
+Additionally:
+1. **String concatenation optimization** - Replaced repeated string concatenation (`text += ...`) with a list that is joined at the end, which is more memory-efficient for large documents
+2. **Added docstring** - Documented the function's purpose, parameters, return value, and possible exceptions
+
+**Fixed code:**
+```python
+async def extract_text_from_pdf(file_path: str) -> tuple[str, int]:
+    """
+    Extracts text content and page count from a PDF file.
+    
+    Uses a context manager to ensure the document is properly closed
+    even if an error occurs during processing.
+    
+    Args:
+        file_path: Path to the PDF file.
+        
+    Returns:
+        A tuple containing (extracted_text, page_count).
+        
+    Raises:
+        fitz.FileDataError: If the file is not a valid PDF.
+        FileNotFoundError: If the file does not exist.
+    """
+    with fitz.open(file_path) as doc:
+        text_parts = []
+        for page in doc:
+            text_parts.append(page.get_text())
+        page_count = len(doc)
+    return "".join(text_parts), page_count
+```
+
+### Resource Management Comparison
+
+| Scenario | Before | After |
+|----------|--------|-------|
+| Normal execution | Document closed manually | Document closed automatically |
+| Error during text extraction | **Document NOT closed (leak!)** | Document closed automatically |
+| Error counting pages | **Document NOT closed (leak!)** | Document closed automatically |
+| Any exception | **Document NOT closed (leak!)** | Document closed automatically |
+
+### Performance Improvement
+
+| Aspect | Before | After |
+|--------|--------|-------|
+| String building | `text += page.get_text()` (O(n²) for large docs) | `list.append()` + `join()` (O(n)) |
+| Memory usage | New string allocated each iteration | Single allocation at the end |
+
+### Files Changed
+
+- `backend/app/services/pdf_processor.py`
+
+---
+
 ## SEC-005: No File Type Validation in Upload
 
 **Type:** SECURITY
