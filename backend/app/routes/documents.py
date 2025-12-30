@@ -167,6 +167,7 @@ async def upload_document(file: UploadFile, db: AsyncSession = Depends(get_db)):
 
     document = Document(
         filename=file.filename,
+        file_path=file_path,
         content=text_content,
         file_size=file_size,
         page_count=page_count,
@@ -264,11 +265,25 @@ async def get_document(document_id: int, db: AsyncSession = Depends(get_db)):
 
 @router.delete("/documents/{document_id}")
 async def delete_document(document_id: int, db: AsyncSession = Depends(get_db)):
+    """
+    Deletes a document and its associated physical file.
+    
+    This endpoint:
+    1. Removes the ProcessingStatus record (if exists)
+    2. Removes the Document record from the database
+    3. Deletes the physical PDF file from disk
+    
+    The physical file deletion is done after the database commit to ensure
+    data consistency. If the file doesn't exist, the deletion is silently ignored.
+    """
     result = await db.execute(select(Document).where(Document.id == document_id))
     document = result.scalar_one_or_none()
 
     if not document:
         raise HTTPException(status_code=404, detail="Document not found")
+
+    # Store file_path before deleting the document record
+    file_path = document.file_path
 
     status_result = await db.execute(
         select(ProcessingStatus).where(ProcessingStatus.document_id == document.id)
@@ -279,5 +294,16 @@ async def delete_document(document_id: int, db: AsyncSession = Depends(get_db)):
 
     await db.delete(document)
     await db.commit()
+
+    # Delete the physical file after successful database commit
+    # This order ensures we don't leave orphaned DB records if file deletion fails
+    if file_path:
+        try:
+            if os.path.isfile(file_path):
+                os.remove(file_path)
+        except OSError:
+            # Log the error but don't fail the request since DB deletion succeeded
+            # In production, this should be logged for monitoring
+            pass
 
     return {"message": "Document deleted"}

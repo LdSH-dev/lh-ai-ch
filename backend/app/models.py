@@ -10,6 +10,7 @@ class Document(Base):
 
     id = Column(Integer, primary_key=True, index=True)
     filename = Column(String(255), nullable=False)
+    file_path = Column(String(512), nullable=True)  # Path to physical file on disk
     content = Column(Text)
     file_size = Column(Integer)
     page_count = Column(Integer)
