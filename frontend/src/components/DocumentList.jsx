@@ -2,6 +2,7 @@ import { useState, useEffect } from 'react'
 import { Link } from 'react-router-dom'
 import { getDocuments } from '../api'
 import { formatFileSize } from '../utils/formatters'
+import TagFilter from './TagFilter'
 
 const PAGE_SIZE = 20
 
@@ -17,6 +18,7 @@ function DocumentList({ refreshKey }) {
   const [documents, setDocuments] = useState([])
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState(null)
+  const [selectedTagId, setSelectedTagId] = useState(null)
   const [pagination, setPagination] = useState({
     page: 1,
     pageSize: PAGE_SIZE,
@@ -24,15 +26,15 @@ function DocumentList({ refreshKey }) {
     totalPages: 1,
   })
 
-  // Reload documents when page changes or when refreshKey changes (e.g., after upload)
+  // Reload documents when page changes, refreshKey changes, or tag filter changes
   useEffect(() => {
     loadDocuments(pagination.page)
-  }, [pagination.page, refreshKey])
+  }, [pagination.page, refreshKey, selectedTagId])
 
   async function loadDocuments(page) {
     try {
       setLoading(true)
-      const data = await getDocuments(page, PAGE_SIZE)
+      const data = await getDocuments(page, PAGE_SIZE, selectedTagId)
       setDocuments(data.items)
       setPagination(prev => ({
         ...prev,
@@ -52,6 +54,12 @@ function DocumentList({ refreshKey }) {
     }
   }
 
+  function handleTagSelect(tagId) {
+    setSelectedTagId(tagId)
+    // Reset to first page when changing filter
+    setPagination(prev => ({ ...prev, page: 1 }))
+  }
+
   if (loading && documents.length === 0) {
     return <div className="loading">Loading documents...</div>
   }
@@ -68,19 +76,30 @@ function DocumentList({ refreshKey }) {
           <span className="document-count">{pagination.total} document{pagination.total !== 1 ? 's' : ''}</span>
         )}
       </div>
+      <TagFilter selectedTagId={selectedTagId} onTagSelect={handleTagSelect} />
       {documents.length === 0 ? (
         <div className="empty-state">
-          No documents uploaded yet. Upload a PDF to get started.
+          {selectedTagId !== null 
+            ? 'No documents found with this tag.'
+            : 'No documents uploaded yet. Upload a PDF to get started.'
+          }
         </div>
       ) : (
         <>
           {documents.map(doc => (
             <div key={doc.id} className="document-item">
-              <div>
+              <div className="document-item-main">
                 <Link to={`/documents/${doc.id}`}>{doc.filename}</Link>
                 <div className="document-meta">
                   {doc.page_count} pages | {formatFileSize(doc.file_size)} | {doc.status}
                 </div>
+                {doc.tags && doc.tags.length > 0 && (
+                  <div className="document-tags">
+                    {doc.tags.map(tag => (
+                      <span key={tag.id} className="tag tag-small">{tag.name}</span>
+                    ))}
+                  </div>
+                )}
               </div>
               <div className="document-meta">
                 {new Date(doc.created_at).toLocaleDateString()}

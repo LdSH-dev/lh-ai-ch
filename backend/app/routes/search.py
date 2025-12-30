@@ -31,50 +31,88 @@ async def search_documents(
     db: AsyncSession = Depends(get_db),
 ):
     """
-    Search documents using PostgreSQL full-text search.
+    Search documents by content, filename, and tags.
     
-    Uses the pre-computed search_vector column with a GIN index for
-    efficient searching. Falls back to ILIKE for documents without
-    a search_vector (legacy records).
+    Search strategy:
+    1. Full-text search on content (using search_vector if available)
+    2. ILIKE search on filename
+    3. ILIKE search on associated tag names
     
-    The search uses plainto_tsquery which handles natural language queries,
-    automatically converting spaces to AND operators.
+    Results are ranked by relevance and deduplicated.
     """
     sanitized_query = sanitize_search_query(q)
     
     if not sanitized_query:
         return []
     
-    # Use full-text search with GIN index for documents with search_vector
-    # Fall back to ILIKE for legacy documents without search_vector
-    # ts_headline generates a snippet with search terms highlighted
+    # Search across content, filename, and tags using UNION to combine results
+    # Each source gets a different base rank to prioritize matches
     query = text("""
+        WITH search_results AS (
+            -- Search by full-text vector (highest priority when available)
+            SELECT DISTINCT
+                d.id,
+                d.filename,
+                SUBSTRING(COALESCE(d.content, ''), 1, 200) as snippet,
+                CASE 
+                    WHEN d.search_vector IS NOT NULL THEN
+                        ts_rank(d.search_vector, plainto_tsquery('portuguese', :search_term)) + 1.0
+                    ELSE 0.5
+                END as rank,
+                d.created_at
+            FROM documents d
+            WHERE 
+                d.search_vector @@ plainto_tsquery('portuguese', :search_term)
+            
+            UNION
+            
+            -- Search by content ILIKE (fallback for documents without search_vector)
+            SELECT DISTINCT
+                d.id,
+                d.filename,
+                SUBSTRING(COALESCE(d.content, ''), 1, 200) as snippet,
+                0.5 as rank,
+                d.created_at
+            FROM documents d
+            WHERE 
+                d.content ILIKE :ilike_term
+            
+            UNION
+            
+            -- Search by filename (high priority)
+            SELECT DISTINCT
+                d.id,
+                d.filename,
+                SUBSTRING(COALESCE(d.content, ''), 1, 200) as snippet,
+                2.0 as rank,
+                d.created_at
+            FROM documents d
+            WHERE 
+                d.filename ILIKE :ilike_term
+            
+            UNION
+            
+            -- Search by tag names
+            SELECT DISTINCT
+                d.id,
+                d.filename,
+                SUBSTRING(COALESCE(d.content, ''), 1, 200) as snippet,
+                1.5 as rank,
+                d.created_at
+            FROM documents d
+            INNER JOIN document_tags dt ON d.id = dt.document_id
+            INNER JOIN tags t ON dt.tag_id = t.id
+            WHERE 
+                t.name ILIKE :ilike_term
+        )
         SELECT 
-            id, 
-            filename, 
-            CASE 
-                WHEN search_vector IS NOT NULL THEN
-                    ts_headline(
-                        'portuguese',
-                        COALESCE(content, ''),
-                        plainto_tsquery('portuguese', :search_term),
-                        'MaxWords=35, MinWords=15, StartSel=, StopSel='
-                    )
-                ELSE
-                    SUBSTRING(COALESCE(content, ''), 1, 200)
-            END as snippet,
-            CASE 
-                WHEN search_vector IS NOT NULL THEN
-                    ts_rank(search_vector, plainto_tsquery('portuguese', :search_term))
-                ELSE
-                    0.0
-            END as rank
-        FROM documents 
-        WHERE 
-            (search_vector @@ plainto_tsquery('portuguese', :search_term))
-            OR 
-            (search_vector IS NULL AND content ILIKE :ilike_term)
-        ORDER BY rank DESC, created_at DESC
+            id,
+            filename,
+            snippet,
+            MAX(rank) as rank
+        FROM search_results
+        GROUP BY id, filename, snippet
+        ORDER BY rank DESC, MAX(created_at) DESC
         LIMIT 100
     """)
     

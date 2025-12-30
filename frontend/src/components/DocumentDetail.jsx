@@ -2,6 +2,7 @@ import { useState, useEffect } from 'react'
 import { useParams, useNavigate } from 'react-router-dom'
 import { getDocument, deleteDocument } from '../api'
 import { formatFileSize } from '../utils/formatters'
+import TagManager from './TagManager'
 
 function DocumentDetail() {
   const { id } = useParams()
@@ -50,6 +51,10 @@ function DocumentDetail() {
     return <div className="error">Document not found</div>
   }
 
+  function handleTagsChange(newTags) {
+    setDocument(prev => ({ ...prev, tags: newTags }))
+  }
+
   return (
     <div className="document-detail">
       <h2>{document.filename}</h2>
@@ -59,6 +64,13 @@ function DocumentDetail() {
         <p>Size: {formatFileSize(document.file_size)}</p>
         <p>Uploaded: {new Date(document.created_at).toLocaleString()}</p>
       </div>
+      
+      <TagManager
+        documentId={document.id}
+        currentTags={document.tags || []}
+        onTagsChange={handleTagsChange}
+      />
+      
       <h3>Extracted Content</h3>
       <div className="content">
         {document.content || 'No content extracted'}

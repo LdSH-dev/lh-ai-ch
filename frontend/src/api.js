@@ -53,8 +53,12 @@ export async function uploadDocument(file) {
   return handleResponse(response);
 }
 
-export async function getDocuments(page = 1, pageSize = 20) {
-  const response = await fetch(`${API_BASE}/documents?page=${page}&page_size=${pageSize}`);
+export async function getDocuments(page = 1, pageSize = 20, tagId = null) {
+  let url = `${API_BASE}/documents?page=${page}&page_size=${pageSize}`;
+  if (tagId !== null) {
+    url += `&tag_id=${tagId}`;
+  }
+  const response = await fetch(url);
   return handleResponse(response);
 }
 
@@ -72,5 +76,47 @@ export async function deleteDocument(id) {
 
 export async function searchDocuments(query) {
   const response = await fetch(`${API_BASE}/search?q=${encodeURIComponent(query)}`);
+  return handleResponse(response);
+}
+
+// ========== Tag API Functions ==========
+
+export async function getTags() {
+  const response = await fetch(`${API_BASE}/tags`);
+  return handleResponse(response);
+}
+
+export async function createTag(name) {
+  const response = await fetch(`${API_BASE}/tags`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ name }),
+  });
+  return handleResponse(response);
+}
+
+export async function deleteTag(tagId) {
+  const response = await fetch(`${API_BASE}/tags/${tagId}`, {
+    method: 'DELETE',
+  });
+  return handleResponse(response);
+}
+
+export async function addTagToDocument(documentId, tagId) {
+  const response = await fetch(`${API_BASE}/documents/${documentId}/tags/${tagId}`, {
+    method: 'POST',
+  });
+  return handleResponse(response);
+}
+
+export async function removeTagFromDocument(documentId, tagId) {
+  const response = await fetch(`${API_BASE}/documents/${documentId}/tags/${tagId}`, {
+    method: 'DELETE',
+  });
+  return handleResponse(response);
+}
+
+export async function getDocumentTags(documentId) {
+  const response = await fetch(`${API_BASE}/documents/${documentId}/tags`);
   return handleResponse(response);
 }

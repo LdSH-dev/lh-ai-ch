@@ -9,8 +9,8 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
 from app.database import get_db
-from app.models import Document, ProcessingStatus
-from app.schemas import DocumentResponse, DocumentDetail, DocumentListResponse
+from app.models import Document, ProcessingStatus, Tag, document_tags
+from app.schemas import DocumentResponse, DocumentDetail, DocumentListResponse, TagResponse
 from app.services.pdf_processor import extract_text_from_pdf
 from app.config import settings
 
@@ -219,27 +219,40 @@ async def upload_document(file: UploadFile, db: AsyncSession = Depends(get_db)):
 async def list_documents(
     page: int = Query(1, ge=1, description="Page number (1-indexed)"),
     page_size: int = Query(DEFAULT_PAGE_SIZE, ge=1, le=MAX_PAGE_SIZE, description="Items per page"),
+    tag_id: int = Query(None, description="Filter by tag ID"),
     db: AsyncSession = Depends(get_db),
 ):
     """
-    List documents with pagination.
+    List documents with pagination and optional tag filtering.
     
     - **page**: Page number starting from 1
     - **page_size**: Number of items per page (max 100)
+    - **tag_id**: Optional tag ID to filter documents
     """
-    # Count total documents
-    count_result = await db.execute(select(func.count(Document.id)))
+    # Build base query
+    base_query = select(Document)
+    
+    # Apply tag filter if provided
+    if tag_id is not None:
+        base_query = base_query.join(document_tags).where(document_tags.c.tag_id == tag_id)
+    
+    # Count total documents matching the filter
+    count_query = select(func.count()).select_from(base_query.subquery())
+    count_result = await db.execute(count_query)
     total = count_result.scalar_one()
     
     # Calculate pagination
     total_pages = (total + page_size - 1) // page_size if total > 0 else 1
     offset = (page - 1) * page_size
     
-    # Use selectinload to eager load processing_status in a single query
+    # Use selectinload to eager load processing_status and tags in a single query
     # This avoids the N+1 query problem
     result = await db.execute(
-        select(Document)
-        .options(selectinload(Document.processing_status))
+        base_query
+        .options(
+            selectinload(Document.processing_status),
+            selectinload(Document.tags)
+        )
         .order_by(Document.created_at.desc())
         .offset(offset)
         .limit(page_size)
@@ -254,6 +267,7 @@ async def list_documents(
             page_count=doc.page_count,
             status=doc.processing_status.status if doc.processing_status else "unknown",
             created_at=doc.created_at,
+            tags=[TagResponse.model_validate(tag) for tag in doc.tags],
         )
         for doc in documents
     ]
@@ -269,16 +283,18 @@ async def list_documents(
 
 @router.get("/documents/{document_id}")
 async def get_document(document_id: int, db: AsyncSession = Depends(get_db)):
-    result = await db.execute(select(Document).where(Document.id == document_id))
+    result = await db.execute(
+        select(Document)
+        .options(
+            selectinload(Document.processing_status),
+            selectinload(Document.tags)
+        )
+        .where(Document.id == document_id)
+    )
     document = result.scalar_one_or_none()
 
     if not document:
         raise HTTPException(status_code=404, detail="Document not found")
-
-    status_result = await db.execute(
-        select(ProcessingStatus).where(ProcessingStatus.document_id == document.id)
-    )
-    status = status_result.scalar_one_or_none()
 
     return DocumentDetail(
         id=document.id,
@@ -286,8 +302,9 @@ async def get_document(document_id: int, db: AsyncSession = Depends(get_db)):
         content=document.content,
         file_size=document.file_size,
         page_count=document.page_count,
-        status=status.status if status else "unknown",
+        status=document.processing_status.status if document.processing_status else "unknown",
         created_at=document.created_at,
+        tags=[TagResponse.model_validate(tag) for tag in document.tags],
     )
 
 
