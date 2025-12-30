@@ -17,7 +17,11 @@ class Document(Base):
     created_at = Column(DateTime, default=datetime.utcnow)
 
     processing_status = relationship(
-        "ProcessingStatus", back_populates="document", uselist=False
+        "ProcessingStatus",
+        back_populates="document",
+        uselist=False,
+        cascade="all, delete-orphan",
+        passive_deletes=True,
     )
 
 
@@ -25,7 +29,11 @@ class ProcessingStatus(Base):
     __tablename__ = "processing_statuses"
 
     id = Column(Integer, primary_key=True, index=True)
-    document_id = Column(Integer, ForeignKey("documents.id"), nullable=False)
+    document_id = Column(
+        Integer,
+        ForeignKey("documents.id", ondelete="CASCADE"),
+        nullable=False,
+    )
     status = Column(String(50), default="completed")
     error_message = Column(Text, nullable=True)
     processed_at = Column(DateTime, nullable=True)

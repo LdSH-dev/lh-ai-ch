@@ -1433,3 +1433,129 @@ When PDF processing fails, the endpoint now returns:
 
 - `backend/app/routes/documents.py`
 
+---
+
+## DB-001: ForeignKey Without CASCADE Causes Orphaned Records
+
+**Type:** DATABASE INTEGRITY
+
+### Summary
+
+The `ProcessingStatus` model in `models.py` had a ForeignKey to `Document` without the `ondelete="CASCADE"` option. This caused orphaned `ProcessingStatus` records when a `Document` was deleted directly in the database (via SQL) rather than through the API.
+
+**Problematic code:**
+```python
+class Document(Base):
+    # ...
+    processing_status = relationship(
+        "ProcessingStatus", back_populates="document", uselist=False
+    )
+
+
+class ProcessingStatus(Base):
+    # ...
+    document_id = Column(Integer, ForeignKey("documents.id"), nullable=False)
+```
+
+This is a data integrity issue because:
+
+1. **Orphaned records** - If a `Document` is deleted via raw SQL (`DELETE FROM documents WHERE id = 1`), the corresponding `ProcessingStatus` record remains in the database with an invalid `document_id`
+2. **Referential integrity violation** - The foreign key constraint doesn't enforce cascading deletes at the database level
+3. **Query errors** - Orphaned records may cause unexpected `None` values or errors when joining tables
+4. **Data inconsistency** - The database state becomes inconsistent with the application's expectations
+5. **Storage waste** - Orphaned records accumulate over time, wasting database storage
+
+### Solution
+
+Implemented **cascading delete** at both the database level and ORM level:
+
+1. **Database-level cascade** - Added `ondelete="CASCADE"` to the ForeignKey, instructing the database to automatically delete related `ProcessingStatus` records when a `Document` is deleted
+2. **ORM-level cascade** - Added `cascade="all, delete-orphan"` to the relationship, ensuring SQLAlchemy also handles cascade deletes when using the ORM
+3. **Passive deletes** - Added `passive_deletes=True` to let the database handle the cascade instead of SQLAlchemy fetching and deleting each related record individually (better performance)
+
+**Fixed code:**
+```python
+class Document(Base):
+    __tablename__ = "documents"
+
+    id = Column(Integer, primary_key=True, index=True)
+    filename = Column(String(255), nullable=False)
+    file_path = Column(String(512), nullable=True)
+    content = Column(Text)
+    file_size = Column(Integer)
+    page_count = Column(Integer)
+    created_at = Column(DateTime, default=datetime.utcnow)
+
+    processing_status = relationship(
+        "ProcessingStatus",
+        back_populates="document",
+        uselist=False,
+        cascade="all, delete-orphan",
+        passive_deletes=True,
+    )
+
+
+class ProcessingStatus(Base):
+    __tablename__ = "processing_statuses"
+
+    id = Column(Integer, primary_key=True, index=True)
+    document_id = Column(
+        Integer,
+        ForeignKey("documents.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    status = Column(String(50), default="completed")
+    error_message = Column(Text, nullable=True)
+    processed_at = Column(DateTime, nullable=True)
+
+    document = relationship("Document", back_populates="processing_status")
+```
+
+### Cascade Options Explained
+
+| Option | Level | Description |
+|--------|-------|-------------|
+| `ondelete="CASCADE"` | Database | PostgreSQL automatically deletes child rows when parent is deleted |
+| `cascade="all, delete-orphan"` | ORM | SQLAlchemy deletes related objects when parent is deleted via ORM |
+| `passive_deletes=True` | ORM | Tells SQLAlchemy to let the DB handle cascade, improving performance |
+
+### Behavior Comparison
+
+| Scenario | Before | After |
+|----------|--------|-------|
+| Delete via API | ProcessingStatus deleted manually in code | ProcessingStatus deleted by cascade |
+| Delete via ORM (`db.delete(doc)`) | ProcessingStatus left orphaned | ProcessingStatus deleted by ORM cascade |
+| Delete via SQL (`DELETE FROM documents`) | ProcessingStatus left orphaned | ProcessingStatus deleted by DB cascade |
+| Delete via Admin panel | ProcessingStatus left orphaned | ProcessingStatus deleted by DB cascade |
+
+### Migration Note
+
+For existing databases, the ForeignKey constraint needs to be altered to add the `ON DELETE CASCADE` behavior. This can be done with Alembic migration:
+
+```python
+# In migration file
+from alembic import op
+
+def upgrade():
+    # Drop the existing foreign key constraint
+    op.drop_constraint(
+        'processing_statuses_document_id_fkey',
+        'processing_statuses',
+        type_='foreignkey'
+    )
+    # Recreate with CASCADE
+    op.create_foreign_key(
+        'processing_statuses_document_id_fkey',
+        'processing_statuses',
+        'documents',
+        ['document_id'],
+        ['id'],
+        ondelete='CASCADE'
+    )
+```
+
+Alternatively, if using `create_all()` with a fresh database, the constraint will be created correctly.
+
+### Files Changed
+
+- `backend/app/models.py`
