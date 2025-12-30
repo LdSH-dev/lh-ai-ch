@@ -1,5 +1,94 @@
 # Findings
 
+## SEC-004: Permissive CORS with Credentials
+
+**Type:** SECURITY
+
+### Summary
+
+The `main.py` file contained an insecure CORS configuration that combined `allow_origins=["*"]` with `allow_credentials=True`.
+
+**Vulnerable code:**
+```python
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+```
+
+This combination is a critical vulnerability because:
+
+1. **Cross-Site Request Forgery (CSRF)** - Any malicious website can make authenticated requests on behalf of the user
+2. **Credential theft** - An attacker can create a site that extracts sensitive data from the authenticated user
+3. **Same-Origin Policy violation** - The browser's natural protection is completely bypassed
+4. **Full API exposure** - All HTTP methods and headers are allowed without restriction
+
+### Solution
+
+Implemented a restrictive CORS configuration following best practices:
+
+1. **Explicit origins** - Allowed origins are defined via the `CORS_ORIGINS` environment variable
+2. **Boot-time validation** - The application fails to start if `CORS_ORIGINS` is not defined
+3. **Restricted methods** - Only `GET`, `POST`, `PUT`, `DELETE` are allowed (not `["*"]`)
+4. **Restricted headers** - Only `Authorization` and `Content-Type` are allowed (not `["*"]`)
+
+**Fixed code in `config.py`:**
+```python
+class Settings:
+    # ...
+    CORS_ORIGINS: list[str] = []
+
+    def __init__(self):
+        self._parse_cors_origins()
+        self._validate_required_vars()
+
+    def _parse_cors_origins(self):
+        """Parse CORS_ORIGINS from environment variable."""
+        cors_env = os.getenv("CORS_ORIGINS", "")
+        if cors_env:
+            self.CORS_ORIGINS = [
+                origin.strip() 
+                for origin in cors_env.split(",") 
+                if origin.strip()
+            ]
+```
+
+**Fixed code in `main.py`:**
+```python
+from app.config import settings
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=settings.CORS_ORIGINS,
+    allow_credentials=True,
+    allow_methods=["GET", "POST", "PUT", "DELETE"],
+    allow_headers=["Authorization", "Content-Type"],
+)
+```
+
+**Docker Compose updated:**
+```yaml
+environment:
+  CORS_ORIGINS: ${CORS_ORIGINS:?CORS_ORIGINS is required}
+```
+
+### Required Environment Variables
+
+| Variable | Required | Description | Example |
+|----------|----------|-------------|---------|
+| `CORS_ORIGINS` | Yes | Comma-separated list of allowed origins | `http://localhost:5173,https://app.example.com` |
+
+### Files Changed
+
+- `backend/app/config.py`
+- `backend/app/main.py`
+- `docker-compose.yml`
+
+---
+
 ## SEC-003: Hardcoded Credentials in Configuration
 
 **Type:** SECURITY
